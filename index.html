@@ -17,21 +17,25 @@
 
   <!-- Your React code goes inside a script tag with type="text/babel" -->
   <script type="text/babel">
-    import { useState, useEffect } from 'react';
-    import { initializeApp } from 'firebase/app';
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, serverTimestamp } from 'firebase/firestore';
+    const { useState, useEffect } = React;
     
-    // Global variables provided by the environment
+    // The Firebase imports were causing the Babel error.
+    // We'll load the Firebase libraries separately and use them directly.
+  </script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js"></script>
+
+  <script type="text/babel">
+    // Firebase initialization is now done here
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
     const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
     
-    // Initialize Firebase
-    const firebaseApp = initializeApp(firebaseConfig);
-    const firestoreDb = getFirestore(firebaseApp);
-    const firebaseAuth = getAuth(firebaseApp);
-    
+    const firebaseApp = firebase.initializeApp(firebaseConfig);
+    const firestoreDb = firebase.firestore(firebaseApp);
+    const firebaseAuth = firebase.auth(firebaseApp);
+
     // Helper function to create a unique ID for a new user
     const createUserId = () => {
       return 'user_' + Math.random().toString(36).substr(2, 9);
@@ -102,14 +106,14 @@
     
       // Initialize Firebase and Auth State
       useEffect(() => {
-        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+        const unsubscribe = firebaseAuth.onAuthStateChanged(async (user) => {
           let userId = null;
           if (user) {
             userId = user.uid;
           } else {
             // Sign in anonymously if no user is found
             try {
-              const anonymousUser = await signInAnonymously(firebaseAuth);
+              const anonymousUser = await firebaseAuth.signInAnonymously();
               userId = anonymousUser.user.uid;
             } catch (error) {
               console.error("Anonymous sign-in failed:", error);
@@ -132,10 +136,10 @@
           const todayDocId = todayString.replace(/-/g, '');
     
           try {
-            const docRef = doc(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
-            const docSnap = await getDoc(docRef);
+            const docRef = firestoreDb.doc(`/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
+            const docSnap = await docRef.get();
     
-            if (docSnap.exists()) {
+            if (docSnap.exists) {
               // Load data from Firestore if it exists for today
               const data = docSnap.data();
               setDate(today.toDateString());
@@ -175,11 +179,11 @@
       useEffect(() => {
         if (!currentUserId) return;
     
-        const historyCollectionRef = collection(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/history`);
+        const historyCollectionRef = firestoreDb.collection(`/artifacts/${appId}/users/${currentUserId}/history`);
         // NOTE: orderBy is disabled to prevent runtime errors related to missing indexes.
-        const q = query(historyCollectionRef);
+        const q = historyCollectionRef;
     
-        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const unsubscribe = q.onSnapshot((querySnapshot) => {
           const fetchedHistory = [];
           querySnapshot.forEach((doc) => {
             fetchedHistory.push(doc.data());
@@ -191,7 +195,7 @@
           console.error("Error fetching history:", error);
         });
     
-        return () => unsubscribe();
+        return () => unsubscribe;
       }, [currentUserId]);
     
       // Main generation function
@@ -261,27 +265,27 @@
           const generatedVeoPrompt = JSON.parse(cleanedVeoPromptString);
           setVeoPrompt(generatedVeoPrompt.prompt);
     
-          const dailyLineDocRef = doc(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
-          await setDoc(dailyLineDocRef, {
+          const dailyLineDocRef = firestoreDb.doc(`/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
+          await dailyLineDocRef.set({
             line: lineContent,
             source: lineSource,
             detailedSource: detailedSource,
             imagePrompt: generatedImagePrompt,
             veoPrompt: generatedVeoPrompt.prompt,
             date: today.toISOString(),
-            timestamp: serverTimestamp(),
+            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
             context: currentContext,
           });
     
-          const historyCollectionRef = collection(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/history`);
-          await addDoc(historyCollectionRef, {
+          const historyCollectionRef = firestoreDb.collection(`/artifacts/${appId}/users/${currentUserId}/history`);
+          await historyCollectionRef.add({
             line: lineContent,
             source: lineSource,
             detailedSource: detailedSource,
             imagePrompt: generatedImagePrompt,
             veoPrompt: generatedVeoPrompt.prompt,
             date: today.toISOString(),
-            timestamp: serverTimestamp(),
+            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
             context: currentContext,
           });
     
