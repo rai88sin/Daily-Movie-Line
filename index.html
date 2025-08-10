@@ -1,497 +1,97 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily Line App</title>
-  <!-- Load Tailwind CSS from a CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gray-900 text-white">
-  <!-- This is where your React app will be rendered -->
-  <div id="root"></div>
+import React, { useEffect, useState } from 'react';
+import './App.css';
 
-  <!-- Your React code goes inside a script tag with type="module" -->
-  <script type="module">
-    import { useState, useEffect } from 'https://esm.sh/react@18.2.0';
-    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js';
-    import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js';
-    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js';
+export default function App() {
+  const todayKey = () => new Date().toISOString().slice(0, 10);
 
-    // Global variables provided by the environment
-    const appId = 'default-app-id';
-    const firebaseConfig = {};
+  const sampleLines = [
+    { text: 'We either die a hero or live long enough to see ourselves become the villain.', source: 'The Dark Knight', tone: 'regret' },
+    { text: 'I wish I knew how to quit you.', source: 'Brokeback Mountain', tone: 'hurt' },
+    { text: 'After all this time', source: 'Harry Potter', tone: 'nostalgia' },
+    { text: 'I have to believe in a world outside my own mind.', source: 'A Beautiful Mind', tone: 'hope' },
+    { text: 'You have to do your own growing, no matter how tall your father was.', source: 'The Tree of Life', tone: 'painful' },
+    { text: 'Sometimes the things that may or may not be true are the things a man needs to believe in the most.', source: 'Big Fish', tone: 'inspiring' }
+  ];
 
-    // Initialize Firebase
-    const firebaseApp = initializeApp(firebaseConfig);
-    const firestoreDb = getFirestore(firebaseApp);
-    const firebaseAuth = getAuth(firebaseApp);
-    
-    // Helper function to create a unique ID for a new user
-    const createUserId = () => {
-      return 'user_' + Math.random().toString(36).substr(2, 9);
-    };
-    
-    // Helper for the Gemini API call with exponential backoff
-    const callGeminiApi = async (prompt, generationConfig = {}) => {
-      let attempts = 0;
-      const maxAttempts = 5;
-      let delay = 1000;
-    
-      while (attempts < maxAttempts) {
-        try {
-          const chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
-          const payload = {
-            contents: chatHistory,
-            ...generationConfig
-          };
-          const apiKey = "";
-          const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-    
-          const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-    
-          if (!response.ok) {
-            throw new Error(`API call failed with status: ${response.status}`);
-          }
-    
-          const result = await response.json();
-          if (result.candidates && result.candidates.length > 0 &&
-            result.candidates[0].content && result.candidates[0].content.parts &&
-            result.candidates[0].content.parts.length > 0) {
-            return result.candidates[0].content.parts[0].text;
-          } else {
-            throw new Error('Invalid API response structure');
-          }
-        } catch (error) {
-          console.error(`Attempt ${attempts + 1} failed: ${error.message}`);
-          attempts++;
-          if (attempts < maxAttempts) {
-            await new Promise(res => setTimeout(res, delay));
-            delay *= 2; // Exponential backoff
-          } else {
-            throw error;
-          }
-        }
+  const [date, setDate] = useState(todayKey());
+  const [currentEvent, setCurrentEvent] = useState('no current event shown');
+  const [quote, setQuote] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [inputTopic, setInputTopic] = useState('');
+
+  useEffect(() => {
+    const storedHistory = JSON.parse(localStorage.getItem('quoteHistory') || '[]');
+    setHistory(storedHistory);
+    const storedToday = localStorage.getItem('lockedQuote-' + date);
+    if (storedToday) {
+      setQuote(JSON.parse(storedToday));
+    } else {
+      generateQuoteAuto();
+    }
+    const timer = setInterval(() => {
+      const nowKey = todayKey();
+      if (nowKey !== date) {
+        setDate(nowKey);
+        localStorage.removeItem('lockedQuote-' + date);
+        generateQuoteAuto(nowKey);
       }
-    };
-    
-    // Main App Component
-    const App = () => {
-      const [date, setDate] = useState(null);
-      const [context, setContext] = useState(null);
-      const [line, setLine] = useState(null);
-      const [source, setSource] = useState(null);
-      const [imagePrompt, setImagePrompt] = useState(null);
-      const [veoPrompt, setVeoPrompt] = useState(null);
-      const [userInput, setUserInput] = useState('');
-      const [history, setHistory] = useState([]);
-      const [isLoading, setIsLoading] = useState(false);
-      const [isHistoryVisible, setIsHistoryVisible] = useState(false);
-      const [isNotificationVisible, setIsNotificationVisible] = useState(false);
-      const [notificationMessage, setNotificationMessage] = useState('');
-      const [currentUserId, setCurrentUserId] = useState(null);
+    }, 60000);
+    return () => clearInterval(timer);
+  }, []);
 
-      // Initialize Firebase and Auth State
-      useEffect(() => {
-        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-          let userId = null;
-          if (user) {
-            userId = user.uid;
-          } else {
-            // Sign in anonymously if no user is found
-            try {
-              const anonymousUser = await signInAnonymously(firebaseAuth);
-              userId = anonymousUser.user.uid;
-            } catch (error) {
-              console.error("Anonymous sign-in failed:", error);
-              // Fallback to a random ID if anonymous sign-in fails
-              userId = createUserId();
-            }
-          }
-          setCurrentUserId(userId);
-        });
-        return () => unsubscribe();
-      }, []);
-    
-      // Fetch or generate data on app load and daily
-      useEffect(() => {
-        if (!currentUserId) return;
-    
-        const fetchOrCreateDailyLine = async () => {
-          const today = new Date();
-          const todayString = today.toISOString().slice(0, 10);
-          const todayDocId = todayString.replace(/-/g, '');
-    
-          try {
-            const docRef = doc(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
-            const docSnap = await getDoc(docRef);
-    
-            if (docSnap.exists()) {
-              // Load data from Firestore if it exists for today
-              const data = docSnap.data();
-              setDate(today.toDateString());
-              setContext(data.context);
-              setLine(data.line);
-              setSource(data.source);
-              setImagePrompt(data.imagePrompt);
-              setVeoPrompt(data.veoPrompt);
-            } else {
-              // Generate new data if it doesn't exist
-              await generateLineFromContext();
-            }
-          } catch (error) {
-            console.error("Error fetching daily line from Firestore:", error);
-            // Fallback to generating new data if there's an error
-            await generateLineFromContext();
-          }
-        };
-    
-        fetchOrCreateDailyLine();
-    
-        // Set up a daily timer to refresh the data
-        const now = new Date();
-        const tomorrow = new Date(now);
-        tomorrow.setDate(now.getDate() + 1);
-        tomorrow.setHours(0, 0, 0, 0);
-        const timeUntilTomorrow = tomorrow.getTime() - now.getTime();
-    
-        const timer = setTimeout(() => {
-          window.location.reload(); // Force a full page refresh
-        }, timeUntilTomorrow);
-    
-        return () => clearTimeout(timer);
-      }, [currentUserId]);
-    
-      // Fetch history from Firestore
-      useEffect(() => {
-        if (!currentUserId) return;
-    
-        const historyCollectionRef = collection(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/history`);
-        // NOTE: orderBy is disabled to prevent runtime errors related to missing indexes.
-        const q = query(historyCollectionRef);
-    
-        const unsubscribe = onSnapshot(q, (querySnapshot) => {
-          const fetchedHistory = [];
-          querySnapshot.forEach((doc) => {
-            fetchedHistory.push(doc.data());
-          });
-          // Sort in memory by date descending
-          fetchedHistory.sort((a, b) => new Date(b.date) - new Date(a.date));
-          setHistory(fetchedHistory);
-        }, (error) => {
-          console.error("Error fetching history:", error);
-        });
-    
-        return () => unsubscribe();
-      }, [currentUserId]);
-    
-      // Main generation function
-      const generateLineFromContext = async (userTopic = '') => {
-        setIsLoading(true);
-        try {
-          const today = new Date();
-          const todayString = today.toISOString().slice(0, 10);
-          const todayDocId = todayString.replace(/-/g, '');
-    
-          let currentContext = context;
-          if (!userTopic && !currentContext) {
-            const contextPrompt = `Today's date is ${today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.
-            Find any public holidays for this date in the USA or Philippines.
-            Find any significant recent viral news, events, or scandals in the USA or Philippines.
-            Combine this information into a short, concise summary. If there's nothing specific, just state that it's a regular day.`;
-            currentContext = await callGeminiApi(contextPrompt);
-            setContext(currentContext);
-          }
-    
-          const promptToUse = userTopic || currentContext;
-    
-          const linePrompt = `Given the following context: "${promptToUse}", generate a single, powerful line from a movie, show, or series. The line should be inspiring, motivating, sad, or emotional, and should ideally be relatable to the context. Also, provide the title of the show/movie, the character who said it, and if possible, the episode and timestamp (e.g., S01E03, 15:23). Format your response as: "Line" - Character, Show/Movie Title (Optional Episode, Optional Timestamp).`;
-          const generatedLine = await callGeminiApi(linePrompt);
-    
-          let [lineContent, sourceInfo] = generatedLine.split(' - ');
-          lineContent = lineContent.replace(/"/g, '');
-    
-          let lineSource = sourceInfo;
-          let detailedSource = '';
-    
-          if (sourceInfo && sourceInfo.includes('(')) {
-            const [baseSource, details] = sourceInfo.split(' (');
-            lineSource = baseSource;
-            detailedSource = details.replace(')', '');
-            setSource(`${lineSource} (${detailedSource})`);
-          } else {
-            setSource(lineSource);
-          }
-          
-          setLine(lineContent);
-    
-          const imagePromptGen = `Given the line "${lineContent}" from ${lineSource}, create a detailed and photorealistic image generation prompt. The prompt should describe the scene, the character's emotion, lighting, and cinematic style, evoking the same emotion as the line.`;
-          const generatedImagePrompt = await callGeminiApi(imagePromptGen);
-          setImagePrompt(generatedImagePrompt);
-    
-          const veoPromptGen = `Given the line "${lineContent}" from ${lineSource}, create a JSON object for a VEO video prompt. The JSON should have a 'prompt' field with a detailed description of a short video scene, including camera angles, character actions, and setting. The video should capture the emotional essence of the line. The format should be: {"prompt": "video description"}`;
-          const generatedVeoPromptString = await callGeminiApi(veoPromptGen, {
-            responseMimeType: "application/json",
-            responseSchema: {
-              "type": "OBJECT",
-              "properties": {
-                "prompt": { "type": "STRING" }
-              },
-              "propertyOrdering": ["prompt"]
-            }
-          });
-          
-          let cleanedVeoPromptString = generatedVeoPromptString;
-          if (cleanedVeoPromptString.startsWith('```json')) {
-            cleanedVeoPromptString = cleanedVeoPromptString.substring(7);
-          }
-          if (cleanedVeoPromptString.endsWith('```')) {
-            cleanedVeoPromptString = cleanedVeoPromptString.slice(0, -3);
-          }
-          const generatedVeoPrompt = JSON.parse(cleanedVeoPromptString);
-          setVeoPrompt(generatedVeoPrompt.prompt);
-    
-          const dailyLineDocRef = doc(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
-          await setDoc(dailyLineDocRef, {
-            line: lineContent,
-            source: lineSource,
-            detailedSource: detailedSource,
-            imagePrompt: generatedImagePrompt,
-            veoPrompt: generatedVeoPrompt.prompt,
-            date: today.toISOString(),
-            timestamp: serverTimestamp(),
-            context: currentContext,
-          });
-    
-          const historyCollectionRef = collection(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/history`);
-          await addDoc(historyCollectionRef, {
-            line: lineContent,
-            source: lineSource,
-            detailedSource: detailedSource,
-            imagePrompt: generatedImagePrompt,
-            veoPrompt: generatedVeoPrompt.prompt,
-            date: today.toISOString(),
-            timestamp: serverTimestamp(),
-            context: currentContext,
-          });
-    
-        } catch (error) {
-          console.error("Error generating new quote:", error);
-          setLine("The greatest glory in living lies not in never falling, but in rising every time we fall.");
-          setSource("- Nelson Mandela");
-          setImagePrompt("A majestic, photorealistic image of a person standing up after a fall, with sun rays breaking through clouds, symbolizing hope and resilience. Cinematic style with deep shadows and bright highlights.");
-          setVeoPrompt('{"prompt": "A short video of a person, seen from a low-angle shot, slowly getting up from the ground. The camera pans up with them, revealing a beautiful, hopeful landscape. The motion is slow and deliberate, with soft, encouraging light."}');
-        } finally {
-          setIsLoading(false);
-          setUserInput('');
-        }
-      };
-    
-      const handleCopy = (text, message) => {
-        try {
-          const tempInput = document.createElement('textarea');
-          tempInput.value = text;
-          document.body.appendChild(tempInput);
-          tempInput.select();
-          document.execCommand('copy');
-          document.body.removeChild(tempInput);
-          showNotification(message);
-        } catch (err) {
-          console.error('Failed to copy text: ', err);
-        }
-      };
-    
-      const showNotification = (message) => {
-        setNotificationMessage(message);
-        setIsNotificationVisible(true);
-        setTimeout(() => {
-          setIsNotificationVisible(false);
-          setNotificationMessage('');
-        }, 3000);
-      };
-    
-      const renderContent = () => {
-        if (isHistoryVisible) {
-          return (
-            <div className="w-full max-w-full flex-grow overflow-y-auto">
-              <div className="flex justify-between items-center mb-4 sticky top-0 bg-gray-900 pt-4 z-10">
-                <h2 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-blue-500">History</h2>
-                <button
-                  onClick={() => setIsHistoryVisible(false)}
-                  className="p-2 text-white bg-gray-700 rounded-full hover:bg-gray-600 transition-all duration-300"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              {history.length > 0 ? (
-                <div className="space-y-6 pb-4">
-                  {history.map((item, index) => (
-                    <div key={index} className="p-6 bg-gray-800 rounded-2xl shadow-lg border border-gray-700 transition-all duration-300 hover:bg-gray-700">
-                      <p className="text-xs text-gray-400 mb-2">
-                        {new Date(item.date).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'long',
-                          day: 'numeric'
-                        })}
-                      </p>
-                      <blockquote className="text-xl italic font-semibold text-white leading-relaxed">
-                        "{item.line}"
-                      </blockquote>
-                      <p className="mt-4 text-sm text-gray-300 font-medium">
-                        {item.source}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-gray-400 text-center mt-10">History is empty. Come back tomorrow!</p>
-              )}
-            </div>
-          );
-        }
-    
-        return (
-          <div className="flex flex-col items-center justify-center p-6 text-center w-full max-w-2xl">
-            <div className="relative w-full max-w-2xl mb-8">
-                <div className="absolute top-0 left-0 text-left">
-                    <p className="text-lg text-gray-400 font-mono">{date}</p>
-                    <p className="text-sm text-gray-500">{context || "No current event shown"}</p>
-                </div>
-                {isLoading ? (
-                  <div className="flex justify-center items-center h-48">
-                    <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-teal-500"></div>
-                  </div>
-                ) : (
-                  <div className="relative mt-20">
-                    <div className="w-full p-8 bg-gray-800 rounded-3xl shadow-xl border-4 border-gray-700 transform transition-all duration-500 hover:scale-105">
-                      {line && (
-                        <blockquote className="text-2xl sm:text-3xl italic font-serif text-white leading-tight">
-                          "{line}"
-                        </blockquote>
-                      )}
-                      {source && (
-                        <p className="mt-6 text-base sm:text-lg font-medium text-teal-400">
-                          {source}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-            </div>
-    
-            <div className="w-full max-w-lg mb-6 mt-40">
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                placeholder="Enter a topic or news event..."
-                className="w-full p-3 bg-gray-800 text-white placeholder-gray-500 rounded-xl border-2 border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all duration-300"
-              />
-            </div>
-    
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 w-full max-w-lg mb-8">
-              <Button onClick={() => generateLineFromContext(userInput)} text="Generate Line" />
-              <Button onClick={() => handleCopy(imagePrompt, 'Image prompt copied!')} text="Generate Image" />
-              <Button onClick={() => handleCopy(veoPrompt, 'VEO prompt copied!')} text="Generate VEO Prompt" />
-              <Button onClick={() => setIsHistoryVisible(true)} text="History" />
-            </div>
-            <div className="flex flex-col w-full text-center text-gray-500 text-sm">
-                <span className="break-all">Current User ID: {currentUserId}</span>
-            </div>
+  const saveHistory = (q) => {
+    const next = [{ ...q, date }, ...history];
+    setHistory(next);
+    localStorage.setItem('quoteHistory', JSON.stringify(next));
+  };
+
+  const pickLineForKeyword = (keyword) => {
+    if (!keyword) return sampleLines[Math.floor(Math.random() * sampleLines.length)];
+    const lower = keyword.toLowerCase();
+    const pool = sampleLines.filter(s => s.text.toLowerCase().includes(lower) || s.source.toLowerCase().includes(lower) || (s.tone && s.tone.includes(lower)));
+    if (pool.length) return pool[Math.floor(Math.random() * pool.length)];
+    return sampleLines[Math.floor(Math.random() * sampleLines.length)];
+  };
+
+  const generateQuoteAuto = () => {
+    setCurrentEvent('no current event shown');
+    const q = pickLineForKeyword(inputTopic);
+    setQuote(q);
+    localStorage.setItem('lockedQuote-' + date, JSON.stringify(q));
+    saveHistory(q);
+  };
+
+  const onGenerate = () => {
+    const q = pickLineForKeyword(inputTopic);
+    setQuote(q);
+    saveHistory(q);
+  };
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div>{date}</div>
+        <div>{currentEvent}</div>
+      </header>
+      <main>
+        <section className="quote-section">
+          <h2>Quote of the Day</h2>
+          <p>{quote ? `"${quote.text}"` : 'No quote generated yet'}</p>
+          <small>{quote ? `source: ${quote.source}` : ''}</small>
+          <div className="controls">
+            <button onClick={onGenerate}>Generate</button>
+            <input value={inputTopic} onChange={e => setInputTopic(e.target.value)} placeholder="Optional topic" />
           </div>
-        );
-      };
-    
-      const Button = ({ onClick, text, className = '' }) => (
-        <button
-          onClick={onClick}
-          className={`relative z-10 w-full p-4 font-bold text-lg text-white rounded-xl overflow-hidden bg-gray-800 transition-all duration-300
-                     shadow-3d hover:shadow-3d-hover focus:outline-none focus:ring-4 focus:ring-teal-500 focus:ring-opacity-50
-                     transform active:scale-95 ${className}`}
-        >
-          <span className="relative z-20">{text}</span>
-          <div className="absolute inset-0 z-10 glowing-border rounded-xl"></div>
-        </button>
-      );
-    
-      return (
-        <div className="min-h-screen bg-gray-900 text-white font-sans flex flex-col items-center justify-center p-4 relative">
-          <style>{`
-            @keyframes glow {
-              0%, 100% {
-                box-shadow: 0 0 5px rgba(0, 255, 255, 0.4), 0 0 10px rgba(0, 255, 255, 0.4), 0 0 15px rgba(0, 255, 255, 0.2);
-              }
-              50% {
-                box-shadow: 0 0 10px rgba(0, 255, 255, 0.6), 0 0 20px rgba(0, 255, 255, 0.6), 0 0 30px rgba(0, 255, 255, 0.4);
-              }
-            }
-            .glowing-border {
-              position: absolute;
-              inset: -4px;
-              border-radius: 1rem;
-              background: linear-gradient(45deg, #0af, #0ff, #0fa);
-              background-size: 400% 400%;
-              filter: blur(8px);
-              z-index: -1;
-              animation: glow 2s linear infinite, border-spin 10s linear infinite;
-              opacity: 0.8;
-              transition: opacity 0.3s;
-            }
-    
-            .shadow-3d {
-              box-shadow:
-                0 8px 16px rgba(0, 0, 0, 0.4),
-                0 -4px 8px rgba(255, 255, 255, 0.1),
-                inset 0 2px 4px rgba(255, 255, 255, 0.2),
-                inset 0 -2px 4px rgba(0, 0, 0, 0.3);
-            }
-            .shadow-3d-hover {
-              box-shadow:
-                0 12px 20px rgba(0, 0, 0, 0.6),
-                0 -6px 10px rgba(255, 255, 255, 0.15),
-                inset 0 3px 6px rgba(255, 255, 255, 0.25),
-                inset 0 -3px 6px rgba(0, 0, 0, 0.4);
-            }
-            @keyframes fadeInOut {
-              0%, 100% { opacity: 0; transform: translateY(20px); }
-              10%, 90% { opacity: 1; transform: translateY(0); }
-            }
-            .notification-box {
-              animation: fadeInOut 3s ease-in-out forwards;
-            }
-          `}</style>
-          <div className="absolute top-0 left-0 p-4">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          </div>
-          <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-6 drop-shadow-lg text-center">
-            Daily Line
-          </h1>
-          <p className="text-gray-300 text-sm mb-8 text-center max-w-sm">
-            Your daily dose of inspiration, emotion, and motivation.
-          </p>
-    
-          {renderContent()}
-    
-          {isNotificationVisible && (
-            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 p-4 bg-teal-500 text-white rounded-lg shadow-lg notification-box">
-              {notificationMessage}
+        </section>
+        <section className="history">
+          <h3>History</h3>
+          {history.length ? history.map((h, i) => (
+            <div key={i}>
+              <em>"{h.text}"</em> - {h.source} ({h.date})
             </div>
-          )}
-        </div>
-      );
-    };
-    
-    // This is the part that actually renders the app to the screen
-    const container = document.getElementById('root');
-    const root = createRoot(container);
-    root.render(<App />);
-  </script>
-</body>
-</html>
+          )) : <p>No history yet</p>}
+        </section>
+      </main>
+    </div>
+  );
+}
