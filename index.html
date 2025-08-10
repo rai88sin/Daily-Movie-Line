@@ -4,38 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Daily Line App</title>
-  <!-- Load React, ReactDOM, and Babel from a CDN -->
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Load Tailwind CSS -->
+  <!-- Load Tailwind CSS from a CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
+<body class="bg-gray-900 text-white">
   <!-- This is where your React app will be rendered -->
   <div id="root"></div>
 
-  <!-- Your React code goes inside a script tag with type="text/babel" -->
-  <script type="text/babel">
-    const { useState, useEffect } = React;
-    
-    // The Firebase imports were causing the Babel error.
-    // We'll load the Firebase libraries separately and use them directly.
-  </script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js"></script>
+  <!-- Your React code goes inside a script tag with type="module" -->
+  <script type="module">
+    import { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js';
+    import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js';
+    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js';
 
-  <script type="text/babel">
-    // Firebase initialization is now done here
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-    
-    const firebaseApp = firebase.initializeApp(firebaseConfig);
-    const firestoreDb = firebase.firestore(firebaseApp);
-    const firebaseAuth = firebase.auth(firebaseApp);
+    // Global variables provided by the environment
+    const appId = 'default-app-id';
+    const firebaseConfig = {};
 
+    // Initialize Firebase
+    const firebaseApp = initializeApp(firebaseConfig);
+    const firestoreDb = getFirestore(firebaseApp);
+    const firebaseAuth = getAuth(firebaseApp);
+    
     // Helper function to create a unique ID for a new user
     const createUserId = () => {
       return 'user_' + Math.random().toString(36).substr(2, 9);
@@ -103,17 +95,17 @@
       const [isNotificationVisible, setIsNotificationVisible] = useState(false);
       const [notificationMessage, setNotificationMessage] = useState('');
       const [currentUserId, setCurrentUserId] = useState(null);
-    
+
       // Initialize Firebase and Auth State
       useEffect(() => {
-        const unsubscribe = firebaseAuth.onAuthStateChanged(async (user) => {
+        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
           let userId = null;
           if (user) {
             userId = user.uid;
           } else {
             // Sign in anonymously if no user is found
             try {
-              const anonymousUser = await firebaseAuth.signInAnonymously();
+              const anonymousUser = await signInAnonymously(firebaseAuth);
               userId = anonymousUser.user.uid;
             } catch (error) {
               console.error("Anonymous sign-in failed:", error);
@@ -136,10 +128,10 @@
           const todayDocId = todayString.replace(/-/g, '');
     
           try {
-            const docRef = firestoreDb.doc(`/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
-            const docSnap = await docRef.get();
+            const docRef = doc(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
+            const docSnap = await getDoc(docRef);
     
-            if (docSnap.exists) {
+            if (docSnap.exists()) {
               // Load data from Firestore if it exists for today
               const data = docSnap.data();
               setDate(today.toDateString());
@@ -179,11 +171,11 @@
       useEffect(() => {
         if (!currentUserId) return;
     
-        const historyCollectionRef = firestoreDb.collection(`/artifacts/${appId}/users/${currentUserId}/history`);
+        const historyCollectionRef = collection(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/history`);
         // NOTE: orderBy is disabled to prevent runtime errors related to missing indexes.
-        const q = historyCollectionRef;
+        const q = query(historyCollectionRef);
     
-        const unsubscribe = q.onSnapshot((querySnapshot) => {
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
           const fetchedHistory = [];
           querySnapshot.forEach((doc) => {
             fetchedHistory.push(doc.data());
@@ -195,7 +187,7 @@
           console.error("Error fetching history:", error);
         });
     
-        return () => unsubscribe;
+        return () => unsubscribe();
       }, [currentUserId]);
     
       // Main generation function
@@ -254,7 +246,6 @@
             }
           });
           
-          // Fix: Check for and remove markdown code fences before parsing
           let cleanedVeoPromptString = generatedVeoPromptString;
           if (cleanedVeoPromptString.startsWith('```json')) {
             cleanedVeoPromptString = cleanedVeoPromptString.substring(7);
@@ -265,27 +256,27 @@
           const generatedVeoPrompt = JSON.parse(cleanedVeoPromptString);
           setVeoPrompt(generatedVeoPrompt.prompt);
     
-          const dailyLineDocRef = firestoreDb.doc(`/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
-          await dailyLineDocRef.set({
+          const dailyLineDocRef = doc(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/dailyLines/${todayDocId}`);
+          await setDoc(dailyLineDocRef, {
             line: lineContent,
             source: lineSource,
             detailedSource: detailedSource,
             imagePrompt: generatedImagePrompt,
             veoPrompt: generatedVeoPrompt.prompt,
             date: today.toISOString(),
-            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+            timestamp: serverTimestamp(),
             context: currentContext,
           });
     
-          const historyCollectionRef = firestoreDb.collection(`/artifacts/${appId}/users/${currentUserId}/history`);
-          await historyCollectionRef.add({
+          const historyCollectionRef = collection(firestoreDb, `/artifacts/${appId}/users/${currentUserId}/history`);
+          await addDoc(historyCollectionRef, {
             line: lineContent,
             source: lineSource,
             detailedSource: detailedSource,
             imagePrompt: generatedImagePrompt,
             veoPrompt: generatedVeoPrompt.prompt,
             date: today.toISOString(),
-            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+            timestamp: serverTimestamp(),
             context: currentContext,
           });
     
@@ -499,7 +490,7 @@
     
     // This is the part that actually renders the app to the screen
     const container = document.getElementById('root');
-    const root = ReactDOM.createRoot(container);
+    const root = createRoot(container);
     root.render(<App />);
   </script>
 </body>
